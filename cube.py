@@ -293,7 +293,7 @@ def render_text(text, fg=(0, 255, 200), bg=(0, 0, 0)):
         return None
 
 
-def render_text_with_bg(text, fg=(255, 255, 255), bg=(255, 0, 0)):
+def render_text_with_bg(text, fg=(255, 255, 255), bg=(60, 0, 0)):
     """Render text with a solid background color (e.g., ON AIR style)."""
     text = text.upper()
     total_w = len(text) * 4 - 1
