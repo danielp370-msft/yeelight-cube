@@ -9,6 +9,12 @@ Protocol (LAN, TCP port 55443):
   2. activate_fx_mode {"mode": "direct"}
   3. update_leds <base64-per-pixel concatenated string>
 Display persists after disconnect.
+
+Animation notes:
+  - activate_fx_mode must be refreshed periodically (~every frame is safest)
+  - update_leds does not return a response in FX mode
+  - On Android/Termux, hold termux-wake-lock to prevent WiFi sleep
+  - On a dedicated server (HA/Pi), no wake lock needed
 """
 
 import socket
@@ -17,6 +23,9 @@ import time
 import select
 import base64
 import math
+import signal
+
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
 CUBE_IP = "192.168.0.83"
 CUBE_PORT = 55443
@@ -74,27 +83,59 @@ def grid_to_payload(grid):
 
 
 # ── cube communication ───────────────────────────────────────────
+class CubeConnection:
+    """Persistent connection to Yeelight Cube for animations."""
+
+    def __init__(self, ip=CUBE_IP, port=CUBE_PORT):
+        self.ip = ip
+        self.port = port
+        self.sock = None
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(5)
+        self.sock.connect((self.ip, self.port))
+        self._cmd("set_power", ["on"], 1)
+        self._cmd("set_bright", [100], 2)
+        self._cmd("activate_fx_mode", [{"mode": "direct"}], 3)
+
+    def _cmd(self, method, params, cid=1):
+        msg = json.dumps({"id": cid, "method": method, "params": params}) + "\r\n"
+        self.sock.send(msg.encode())
+        time.sleep(0.2)
+        while select.select([self.sock], [], [], 0.1)[0]:
+            self.sock.recv(4096)
+
+    def send_frame(self, grid):
+        """Send a single frame, refreshing FX mode."""
+        self._cmd("activate_fx_mode", [{"mode": "direct"}], 3)
+        time.sleep(0.05)
+        payload = grid_to_payload(grid)
+        self.sock.send((json.dumps({
+            "id": 10, "method": "update_leds", "params": [payload]
+        }) + "\r\n").encode())
+        while select.select([self.sock], [], [], 0)[0]:
+            self.sock.recv(4096)
+
+    def close(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except:
+                pass
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 def send_grid(grid, ip=CUBE_IP, port=CUBE_PORT):
     """Connect to cube, activate FX mode, and send pixel data."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(10)
-    s.connect((ip, port))
-
-    def cmd(method, params, cid=1):
-        msg = json.dumps({"id": cid, "method": method, "params": params}) + "\r\n"
-        s.send(msg.encode())
-        time.sleep(0.3)
-        ready = select.select([s], [], [], 2)
-        if ready[0]:
-            return s.recv(4096).decode(errors="replace").strip()
-        return None
-
-    cmd("set_power", ["on"], 1)
-    cmd("set_bright", [100], 2)
-    cmd("activate_fx_mode", [{"mode": "direct"}], 3)
-    time.sleep(0.5)
-    cmd("update_leds", [grid_to_payload(grid)], 10)
-    s.close()
+    with CubeConnection(ip, port) as cube:
+        cube.send_frame(grid)
 
 
 # ── pattern generators ───────────────────────────────────────────
@@ -238,13 +279,147 @@ def render_text(text, fg=(0, 255, 200), bg=(0, 0, 0)):
     return grid
 
 
+# ── animation generators ─────────────────────────────────────────
+def anim_rainbow(duration=60, fps=1):
+    """Animated rainbow scroll."""
+    with CubeConnection() as cube:
+        start = time.time()
+        frame = 0
+        while time.time() - start < duration:
+            t = time.time() - start
+            grid = make_grid()
+            for row in range(ROWS):
+                for col in range(COLS):
+                    hue = ((col / COLS) + (row / ROWS) * 0.15 + t * 0.1) % 1.0
+                    set_pixel(grid, row, col, *rgb_from_hsv(hue, 1.0, 1.0))
+            cube.send_frame(grid)
+            frame += 1
+            time.sleep(1.0 / fps)
+        print(f"{frame} frames in {time.time()-start:.0f}s")
+
+
+def anim_aurora(duration=60, fps=1):
+    """Animated northern lights — flowing waves of green/teal/purple."""
+    with CubeConnection() as cube:
+        start = time.time()
+        frame = 0
+        while time.time() - start < duration:
+            t = time.time() - start
+            grid = make_grid()
+            for row in range(ROWS):
+                for col in range(COLS):
+                    wave1 = math.sin(col * 0.4 + row * 0.8 + t * 0.5) * 0.5 + 0.5
+                    wave2 = math.sin(col * 0.25 - row * 1.2 + t * 0.3) * 0.5 + 0.5
+                    wave3 = math.sin(col * 0.6 + t * 0.7) * 0.5 + 0.5
+                    r = int(40 + 100 * wave2 * (1 - wave1) + 60 * wave3)
+                    g = int(120 + 135 * wave1)
+                    b = int(80 + 175 * wave2 * wave1)
+                    brightness = 0.3 + 0.7 * (row / (ROWS - 1))
+                    r = min(255, int(r * brightness))
+                    g = min(255, int(g * brightness))
+                    b = min(255, int(b * brightness))
+                    set_pixel(grid, row, col, r, g, b)
+            cube.send_frame(grid)
+            frame += 1
+            time.sleep(1.0 / fps)
+        print(f"{frame} frames in {time.time()-start:.0f}s")
+
+
+def anim_fire(duration=60, fps=1):
+    """Animated fire effect — flickering reds, oranges, yellows."""
+    import random
+    with CubeConnection() as cube:
+        # Heat map for the fire
+        heat = [0.0] * NUM_PIXELS
+        start = time.time()
+        frame = 0
+        while time.time() - start < duration:
+            # Cool down
+            for i in range(NUM_PIXELS):
+                heat[i] = max(0, heat[i] - random.uniform(0.05, 0.15))
+            # Ignite bottom row
+            for col in range(COLS):
+                heat[col] = min(1.0, heat[col] + random.uniform(0.3, 1.0))
+            # Propagate upward
+            for row in range(ROWS - 1, 0, -1):
+                for col in range(COLS):
+                    below = heat[pixel_index(row - 1, col)]
+                    left = heat[pixel_index(row - 1, max(0, col - 1))]
+                    right = heat[pixel_index(row - 1, min(COLS - 1, col + 1))]
+                    heat[pixel_index(row, col)] = (below + left + right) / 3.2
+            # Render
+            grid = make_grid()
+            for row in range(ROWS):
+                for col in range(COLS):
+                    h = heat[pixel_index(row, col)]
+                    r = min(255, int(h * 255))
+                    g = min(255, int(h * h * 180))
+                    b = min(255, int(h * h * h * 60))
+                    set_pixel(grid, row, col, r, g, b)
+            cube.send_frame(grid)
+            frame += 1
+            time.sleep(1.0 / fps)
+        print(f"{frame} frames in {time.time()-start:.0f}s")
+
+
+def anim_breathe(duration=60, fps=1, r=0, g=255, b=200):
+    """Gentle breathing/pulsing effect in one color."""
+    with CubeConnection() as cube:
+        start = time.time()
+        frame = 0
+        while time.time() - start < duration:
+            t = time.time() - start
+            brightness = (math.sin(t * 0.8) * 0.5 + 0.5) ** 1.5
+            grid = make_grid(
+                int(r * brightness),
+                int(g * brightness),
+                int(b * brightness),
+            )
+            cube.send_frame(grid)
+            frame += 1
+            time.sleep(1.0 / fps)
+        print(f"{frame} frames in {time.time()-start:.0f}s")
+
+
+def anim_scroll_text(text, duration=60, fps=1, fg=(0, 255, 200), bg=(0, 0, 0)):
+    """Scroll text across the display."""
+    text = text.upper()
+    # Build full bitmap of the text
+    char_width = 4  # 3px + 1px gap
+    total_width = len(text) * char_width
+    bitmap = [[False] * total_width for _ in range(5)]
+    for ci, ch in enumerate(text):
+        glyph = FONT_5X3.get(ch, FONT_5X3[' '])
+        for row in range(5):
+            for dx, c in enumerate(glyph[row]):
+                if c == 'X':
+                    bitmap[row][ci * char_width + dx] = True
+
+    with CubeConnection() as cube:
+        start = time.time()
+        frame = 0
+        while time.time() - start < duration:
+            offset = frame % (total_width + COLS)
+            grid = make_grid(*bg)
+            for row in range(ROWS):
+                grid_row = ROWS - 1 - row
+                for col in range(COLS):
+                    src_col = col + offset - COLS
+                    if 0 <= src_col < total_width and bitmap[row][src_col]:
+                        set_pixel(grid, grid_row, col, *fg)
+            cube.send_frame(grid)
+            frame += 1
+            time.sleep(1.0 / fps)
+        print(f"{frame} frames in {time.time()-start:.0f}s")
+
+
 # ── main ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
 
     usage = """Usage: python cube.py <command> [args]
 
-Commands:
+Commands (static):
   text <message> [r g b]  — Display text (max ~5 chars)
   rainbow                 — Rainbow wave gradient
   sunset                  — Warm sunset gradient
@@ -253,10 +428,18 @@ Commands:
   off                     — Turn all LEDs off
   color <r> <g> <b>       — Fill all LEDs with one color
 
+Commands (animated):
+  anim rainbow [duration] [fps]     — Animated rainbow scroll
+  anim aurora [duration] [fps]      — Animated northern lights
+  anim fire [duration] [fps]        — Flickering fire
+  anim breathe [duration] [fps] [r g b] — Breathing pulse
+  anim scroll <text> [duration] [fps]   — Scrolling text
+
 Examples:
   python cube.py text "HI" 0 255 200
   python cube.py aurora
-  python cube.py color 255 100 0
+  python cube.py anim fire 120 2
+  python cube.py anim scroll "HELLO WORLD" 60 1
 """
 
     if len(sys.argv) < 2:
@@ -299,6 +482,30 @@ Examples:
         r, g, b = int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
         send_grid(make_grid(r, g, b))
         print(f"Solid color ({r}, {g}, {b})")
+
+    elif command == "anim":
+        anim_type = sys.argv[2].lower() if len(sys.argv) > 2 else "rainbow"
+        dur = int(sys.argv[3]) if len(sys.argv) > 3 else 60
+        fps = float(sys.argv[4]) if len(sys.argv) > 4 else 1
+
+        if anim_type == "rainbow":
+            anim_rainbow(dur, fps)
+        elif anim_type == "aurora":
+            anim_aurora(dur, fps)
+        elif anim_type == "fire":
+            anim_fire(dur, fps)
+        elif anim_type == "breathe":
+            r = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+            g = int(sys.argv[6]) if len(sys.argv) > 6 else 255
+            b = int(sys.argv[7]) if len(sys.argv) > 7 else 200
+            anim_breathe(dur, fps, r, g, b)
+        elif anim_type == "scroll":
+            text = sys.argv[3] if len(sys.argv) > 3 else "HELLO"
+            dur = int(sys.argv[4]) if len(sys.argv) > 4 else 60
+            fps = float(sys.argv[5]) if len(sys.argv) > 5 else 1
+            anim_scroll_text(text, dur, fps)
+        else:
+            print(f"Unknown animation: {anim_type}")
 
     else:
         print(usage)
