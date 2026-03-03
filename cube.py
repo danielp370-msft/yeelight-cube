@@ -98,6 +98,8 @@ class CubeConnection:
         self._cmd("set_power", ["on"], 1)
         self._cmd("set_bright", [100], 2)
         self._cmd("activate_fx_mode", [{"mode": "direct"}], 3)
+        self._last_fx = time.time()
+        self._fx_interval = 10  # refresh FX every 10 seconds
 
     def _cmd(self, method, params, cid=1):
         msg = json.dumps({"id": cid, "method": method, "params": params}) + "\r\n"
@@ -107,9 +109,18 @@ class CubeConnection:
             self.sock.recv(4096)
 
     def send_frame(self, grid):
-        """Send a single frame, refreshing FX mode."""
-        self._cmd("activate_fx_mode", [{"mode": "direct"}], 3)
-        time.sleep(0.05)
+        """Send a single frame, refreshing FX mode periodically."""
+        now = time.time()
+        if now - self._last_fx > self._fx_interval:
+            # Wait for FX response (this is the key — pacing the connection)
+            msg = json.dumps({"id": 3, "method": "activate_fx_mode", "params": [{"mode": "direct"}]}) + "\r\n"
+            self.sock.send(msg.encode())
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                if select.select([self.sock], [], [], 0.5)[0]:
+                    self.sock.recv(4096)
+                    break
+            self._last_fx = time.time()
         payload = grid_to_payload(grid)
         self.sock.send((json.dumps({
             "id": 10, "method": "update_leds", "params": [payload]
@@ -259,24 +270,97 @@ FONT_5X3[' '] = ["...","...","...","...","..."]
 
 
 def render_text(text, fg=(0, 255, 200), bg=(0, 0, 0)):
-    """Render text onto a 5×20 grid. Returns grid."""
+    """Render text onto a 5×20 grid. Auto-scrolls if too wide. Returns grid or 'scroll' flag."""
     text = text.upper()
-    grid = make_grid(*bg)
-    # Calculate total width
     total_w = len(text) * 4 - 1  # 3px per char + 1px gap
-    start_col = max(0, (COLS - total_w) // 2)  # center
+    grid = make_grid(*bg)
 
+    if total_w <= COLS:
+        # Fits — center it
+        start_col = (COLS - total_w) // 2
+        col = start_col
+        for ch in text:
+            glyph = FONT_5X3.get(ch, FONT_5X3[' '])
+            for text_row in range(5):
+                grid_row = ROWS - 1 - text_row
+                for dx, c in enumerate(glyph[text_row]):
+                    if c == 'X' and 0 <= col + dx < COLS:
+                        set_pixel(grid, grid_row, col + dx, *fg)
+            col += 4
+        return grid
+    else:
+        # Too wide — return None to signal caller to use scroll
+        return None
+
+
+def render_text_with_bg(text, fg=(255, 255, 255), bg=(255, 0, 0)):
+    """Render text with a solid background color (e.g., ON AIR style)."""
+    text = text.upper()
+    total_w = len(text) * 4 - 1
+    grid = make_grid(*bg)  # fill entire grid with bg
+    start_col = max(0, (COLS - total_w) // 2)
     col = start_col
     for ch in text:
         glyph = FONT_5X3.get(ch, FONT_5X3[' '])
         for text_row in range(5):
-            grid_row = ROWS - 1 - text_row  # top of text = top of grid
+            grid_row = ROWS - 1 - text_row
             for dx, c in enumerate(glyph[text_row]):
                 if c == 'X' and 0 <= col + dx < COLS:
                     set_pixel(grid, grid_row, col + dx, *fg)
-        col += 4  # 3px char + 1px gap
-
+        col += 4
     return grid
+
+
+def text_bitmap(text):
+    """Build a full-width bitmap for scrolling text."""
+    text = text.upper()
+    char_width = 4
+    total_width = len(text) * char_width
+    bitmap = [[False] * total_width for _ in range(5)]
+    for ci, ch in enumerate(text):
+        glyph = FONT_5X3.get(ch, FONT_5X3[' '])
+        for row in range(5):
+            for dx, c in enumerate(glyph[row]):
+                if c == 'X':
+                    bitmap[row][ci * char_width + dx] = True
+    return bitmap, total_width
+
+
+# ── image support ────────────────────────────────────────────────
+def load_image(path):
+    """Load an image file, resize to 5×20, return as grid."""
+    from PIL import Image
+    img = Image.open(path).convert("RGB")
+    img = img.resize((COLS, ROWS), Image.LANCZOS)
+    grid = make_grid()
+    for row in range(ROWS):
+        for col in range(COLS):
+            r, g, b = img.getpixel((col, ROWS - 1 - row))  # flip Y
+            set_pixel(grid, row, col, r, g, b)
+    return grid
+
+
+def load_gif_frames(path):
+    """Load all frames from a GIF, resize to 5×20, return list of grids."""
+    from PIL import Image
+    img = Image.open(path)
+    frames = []
+    durations = []
+    try:
+        while True:
+            frame = img.convert("RGB").resize((COLS, ROWS), Image.LANCZOS)
+            grid = make_grid()
+            for row in range(ROWS):
+                for col in range(COLS):
+                    r, g, b = frame.getpixel((col, ROWS - 1 - row))
+                    set_pixel(grid, row, col, r, g, b)
+            frames.append(grid)
+            dur = img.info.get("duration", 100) / 1000.0  # ms to seconds
+            durations.append(max(dur, 0.5))  # min 0.5s per frame
+            img.seek(img.tell() + 1)
+    except EOFError:
+        pass
+    return frames, durations
 
 
 # ── animation generators ─────────────────────────────────────────
@@ -383,17 +467,7 @@ def anim_breathe(duration=60, fps=1, r=0, g=255, b=200):
 
 def anim_scroll_text(text, duration=60, fps=1, fg=(0, 255, 200), bg=(0, 0, 0)):
     """Scroll text across the display."""
-    text = text.upper()
-    # Build full bitmap of the text
-    char_width = 4  # 3px + 1px gap
-    total_width = len(text) * char_width
-    bitmap = [[False] * total_width for _ in range(5)]
-    for ci, ch in enumerate(text):
-        glyph = FONT_5X3.get(ch, FONT_5X3[' '])
-        for row in range(5):
-            for dx, c in enumerate(glyph[row]):
-                if c == 'X':
-                    bitmap[row][ci * char_width + dx] = True
+    bitmap, total_width = text_bitmap(text)
 
     with CubeConnection() as cube:
         start = time.time()
@@ -413,6 +487,30 @@ def anim_scroll_text(text, duration=60, fps=1, fg=(0, 255, 200), bg=(0, 0, 0)):
         print(f"{frame} frames in {time.time()-start:.0f}s")
 
 
+def anim_gif(path, duration=60, loops=0):
+    """Play an animated GIF on the cube."""
+    frames, durations = load_gif_frames(path)
+    if not frames:
+        print("No frames found in GIF")
+        return
+    print(f"Loaded {len(frames)} frames from {path}")
+
+    with CubeConnection() as cube:
+        start = time.time()
+        frame_idx = 0
+        loop_count = 0
+        while time.time() - start < duration:
+            cube.send_frame(frames[frame_idx])
+            time.sleep(durations[frame_idx])
+            frame_idx += 1
+            if frame_idx >= len(frames):
+                frame_idx = 0
+                loop_count += 1
+                if loops > 0 and loop_count >= loops:
+                    break
+        print(f"{loop_count} loops in {time.time()-start:.0f}s")
+
+
 # ── main ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
@@ -420,26 +518,32 @@ if __name__ == "__main__":
     usage = """Usage: python cube.py <command> [args]
 
 Commands (static):
-  text <message> [r g b]  — Display text (max ~5 chars)
-  rainbow                 — Rainbow wave gradient
-  sunset                  — Warm sunset gradient
-  aurora                  — Northern lights effect
-  stars                   — Starfield
-  off                     — Turn all LEDs off
-  color <r> <g> <b>       — Fill all LEDs with one color
+  text <message> [r g b]        — Display text (auto-scrolls if too long)
+  sign <message> [fgR fgG fgB bgR bgG bgB] — Text with background (ON AIR style)
+  image <path>                  — Display a PNG/JPG image
+  rainbow                       — Rainbow wave gradient
+  sunset                        — Warm sunset gradient
+  aurora                        — Northern lights effect
+  stars                         — Starfield
+  off                           — Turn all LEDs off
+  color <r> <g> <b>             — Fill all LEDs with one color
 
 Commands (animated):
-  anim rainbow [duration] [fps]     — Animated rainbow scroll
-  anim aurora [duration] [fps]      — Animated northern lights
-  anim fire [duration] [fps]        — Flickering fire
-  anim breathe [duration] [fps] [r g b] — Breathing pulse
-  anim scroll <text> [duration] [fps]   — Scrolling text
+  anim rainbow [duration] [fps]              — Animated rainbow scroll
+  anim aurora [duration] [fps]               — Animated northern lights
+  anim fire [duration] [fps]                 — Flickering fire
+  anim breathe [duration] [fps] [r g b]      — Breathing pulse
+  anim scroll <text> [duration] [fps]        — Scrolling text
+  anim gif <path> [duration]                 — Play animated GIF
 
 Examples:
   python cube.py text "HI" 0 255 200
-  python cube.py aurora
-  python cube.py anim fire 120 2
+  python cube.py text "ON AIR"                  # auto-scrolls
+  python cube.py sign "LIVE" 255 255 255 255 0 0  # white on red
+  python cube.py image photo.png
+  python cube.py anim fire 120 1
   python cube.py anim scroll "HELLO WORLD" 60 1
+  python cube.py anim gif nyan.gif 60
 """
 
     if len(sys.argv) < 2:
@@ -455,8 +559,34 @@ Examples:
         else:
             fg = (0, 255, 200)
         grid = render_text(msg, fg=fg)
+        if grid is None:
+            # Too wide — auto-scroll
+            print(f'"{msg}" too wide, scrolling...')
+            anim_scroll_text(msg, duration=len(msg) * 4, fps=1, fg=fg)
+        else:
+            send_grid(grid)
+            print(f'Displayed: "{msg}"')
+
+    elif command == "sign":
+        msg = sys.argv[2] if len(sys.argv) > 2 else "LIVE"
+        if len(sys.argv) >= 9:
+            fg = (int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]))
+            bg = (int(sys.argv[6]), int(sys.argv[7]), int(sys.argv[8]))
+        elif len(sys.argv) >= 6:
+            fg = (int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]))
+            bg = (255, 0, 0)
+        else:
+            fg = (255, 255, 255)
+            bg = (255, 0, 0)
+        grid = render_text_with_bg(msg, fg=fg, bg=bg)
         send_grid(grid)
-        print(f'Displayed: "{msg}"')
+        print(f'Sign: "{msg}"')
+
+    elif command == "image":
+        path = sys.argv[2]
+        grid = load_image(path)
+        send_grid(grid)
+        print(f'Displayed image: {path}')
 
     elif command == "rainbow":
         send_grid(rainbow_wave())
@@ -504,6 +634,10 @@ Examples:
             dur = int(sys.argv[4]) if len(sys.argv) > 4 else 60
             fps = float(sys.argv[5]) if len(sys.argv) > 5 else 1
             anim_scroll_text(text, dur, fps)
+        elif anim_type == "gif":
+            path = sys.argv[3] if len(sys.argv) > 3 else "anim.gif"
+            dur = int(sys.argv[4]) if len(sys.argv) > 4 else 60
+            anim_gif(path, dur)
         else:
             print(f"Unknown animation: {anim_type}")
 
