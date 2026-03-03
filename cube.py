@@ -222,33 +222,33 @@ def starfield():
 # ── text rendering ───────────────────────────────────────────────
 FONT_5X3 = {
     'A': ["XXX","X.X","XXX","X.X","X.X"],
-    'B': ["XX.","X.X","XX.","X.X","XX."],
+    'B': ["XXX.","X..X","XXX.","X..X","XXX."],
     'C': ["XXX","X..","X..","X..","XXX"],
-    'D': ["XX.","X.X","X.X","X.X","XX."],
+    'D': ["XXX.","X..X","X..X","X..X","XXX."],
     'E': ["XXX","X..","XX.","X..","XXX"],
     'F': ["XXX","X..","XX.","X..","X.."],
-    'G': ["XXX","X..","X.X","X.X","XXX"],
+    'G': ["XXXX","X...","X.XX","X..X","XXXX"],
     'H': ["X.X","X.X","XXX","X.X","X.X"],
-    'I': ["XXX",".X.",".X.",".X.","XXX"],
+    'I': ["X","X","X","X","X"],
     'J': ["..X","..X","..X","X.X","XXX"],
     'K': ["X.X","X.X","XX.","X.X","X.X"],
     'L': ["X..","X..","X..","X..","XXX"],
-    'M': ["X.X","XXX","XXX","X.X","X.X"],
-    'N': ["X.X","XXX","XXX","X.X","X.X"],
+    'M': ["X..X","XXXX","X..X","X..X","X..X"],
+    'N': ["X..X","XX.X","X.XX","X..X","X..X"],
     'O': ["XXX","X.X","X.X","X.X","XXX"],
     'P': ["XXX","X.X","XXX","X..","X.."],
     'Q': ["XXX","X.X","X.X","XXX","..X"],
-    'R': ["XXX","X.X","XX.","X.X","X.X"],
+    'R': ["XXX.","X..X","XXX.","X.X.","X..X"],
     'S': ["XXX","X..","XXX","..X","XXX"],
     'T': ["XXX",".X.",".X.",".X.",".X."],
     'U': ["X.X","X.X","X.X","X.X","XXX"],
     'V': ["X.X","X.X","X.X","X.X",".X."],
-    'W': ["X.X","X.X","XXX","XXX","X.X"],
+    'W': ["X..X","X..X","X..X","XXXX","X..X"],
     'X': ["X.X","X.X",".X.","X.X","X.X"],
     'Y': ["X.X","X.X","XXX",".X.",".X."],
     'Z': ["XXX","..X",".X.","X..","XXX"],
     '0': ["XXX","X.X","X.X","X.X","XXX"],
-    '1': [".X.",".X.",".X.",".X.",".X."],
+    '1': ["X","X","X","X","X"],
     '2': ["XXX","..X","XXX","X..","XXX"],
     '3': ["XXX","..X","XXX","..X","XXX"],
     '4': ["X.X","X.X","XXX","..X","..X"],
@@ -257,39 +257,53 @@ FONT_5X3 = {
     '7': ["XXX","..X","..X","..X","..X"],
     '8': ["XXX","X.X","XXX","X.X","XXX"],
     '9': ["XXX","X.X","XXX","..X","XXX"],
-    ' ': ["...",".?.","...",".?.","..."],
-    '!': [".X.",".X.",".X.","...",".X."],
+    ' ': ["...","...","...","...","..."],
+    '!': ["X","X","X",".","X"],
     '?': ["XXX","..X",".X.","...",".X."],
-    '.': ["...","...","...","...",".X."],
-    ':': ["...",".X.","...",".X.","..."],
+    '.': [".",".",".",".","."],
+    ':': [".","X",".","X","."],
     '-': ["...","...","XXX","...","..."],
-    '<': ["..X",".X.","X..",".X.","..X"],  # heart left half
-    '>': ["X..",".X.","..X",".X.","X.."],  # heart right half
+    '<': ["..X",".X.","X..",".X.","..X"],
+    '>': ["X..",".X.","..X",".X.","X.."],
 }
-FONT_5X3[' '] = ["...","...","...","...","..."]
+
+
+def text_layout(text):
+    """Compute column positions for each char. Variable-width glyphs."""
+    text = text.upper()
+    positions = []
+    col = 0
+    for ch in text:
+        positions.append((ch, col))
+        if ch == ' ':
+            col += 2  # word gap
+        else:
+            glyph = FONT_5X3.get(ch, FONT_5X3[' '])
+            col += len(glyph[0]) + 1  # glyph width + 1px gap
+    # subtract trailing gap
+    if text and text[-1] != ' ':
+        col -= 1
+    return text, positions, col
 
 
 def render_text(text, fg=(0, 255, 200), bg=(0, 0, 0)):
     """Render text onto a 5×20 grid. Auto-scrolls if too wide. Returns grid or 'scroll' flag."""
-    text = text.upper()
-    total_w = len(text) * 4 - 1  # 3px per char + 1px gap
+    text, positions, total_w = text_layout(text)
     grid = make_grid(*bg)
 
     if total_w <= COLS:
-        # Fits — center it
         start_col = (COLS - total_w) // 2
-        col = start_col
-        for ch in text:
+        for ch, col in positions:
+            if ch == ' ':
+                continue
             glyph = FONT_5X3.get(ch, FONT_5X3[' '])
             for text_row in range(5):
                 grid_row = ROWS - 1 - text_row
                 for dx, c in enumerate(glyph[text_row]):
-                    if c == 'X' and 0 <= col + dx < COLS:
-                        set_pixel(grid, grid_row, col + dx, *fg)
-            col += 4
+                    if c == 'X' and 0 <= start_col + col + dx < COLS:
+                        set_pixel(grid, grid_row, start_col + col + dx, *fg)
         return grid
     else:
-        # Too wide — return None to signal caller to use scroll
         return None
 
 
@@ -325,78 +339,80 @@ NAMED_PALETTES = {
 
 def render_text_multi(text, colors=None, bg=(0, 0, 0)):
     """Render text with each letter a different color."""
-    text = text.upper()
+    text, positions, total_w = text_layout(text)
     if colors is None:
-        colors = rainbow_palette(len(text))
-    total_w = len(text) * 4 - 1
+        colors = rainbow_palette(len(text.replace(' ', '')))
     grid = make_grid(*bg)
     if total_w > COLS:
-        return None  # too wide, caller should scroll
+        return None
     start_col = (COLS - total_w) // 2
-    col = start_col
-    for ci, ch in enumerate(text):
+    ci = 0
+    for ch, col in positions:
+        if ch == ' ':
+            continue
         fg = colors[ci % len(colors)]
         glyph = FONT_5X3.get(ch, FONT_5X3[' '])
         for text_row in range(5):
             grid_row = ROWS - 1 - text_row
             for dx, c in enumerate(glyph[text_row]):
-                if c == 'X' and 0 <= col + dx < COLS:
-                    set_pixel(grid, grid_row, col + dx, *fg)
-        col += 4
+                if c == 'X' and 0 <= start_col + col + dx < COLS:
+                    set_pixel(grid, grid_row, start_col + col + dx, *fg)
+        ci += 1
     return grid
 
 
 def render_sign_multi(text, colors=None, bg=(30, 0, 0)):
     """Render sign-style text with each letter a different color and solid bg."""
-    text = text.upper()
+    text, positions, total_w = text_layout(text)
     if colors is None:
-        colors = rainbow_palette(len(text))
-    total_w = len(text) * 4 - 1
+        colors = rainbow_palette(len(text.replace(' ', '')))
     grid = make_grid(*bg)
     start_col = max(0, (COLS - total_w) // 2)
-    col = start_col
-    for ci, ch in enumerate(text):
+    ci = 0
+    for ch, col in positions:
+        if ch == ' ':
+            continue
         fg = colors[ci % len(colors)]
         glyph = FONT_5X3.get(ch, FONT_5X3[' '])
         for text_row in range(5):
             grid_row = ROWS - 1 - text_row
             for dx, c in enumerate(glyph[text_row]):
-                if c == 'X' and 0 <= col + dx < COLS:
-                    set_pixel(grid, grid_row, col + dx, *fg)
-        col += 4
+                if c == 'X' and 0 <= start_col + col + dx < COLS:
+                    set_pixel(grid, grid_row, start_col + col + dx, *fg)
+        ci += 1
     return grid
 
 
 def render_text_with_bg(text, fg=(255, 255, 255), bg=(30, 0, 0)):
     """Render text with a solid background color (e.g., ON AIR style)."""
-    text = text.upper()
-    total_w = len(text) * 4 - 1
-    grid = make_grid(*bg)  # fill entire grid with bg
+    text, positions, total_w = text_layout(text)
+    grid = make_grid(*bg)
     start_col = max(0, (COLS - total_w) // 2)
-    col = start_col
-    for ch in text:
+    for ch, col in positions:
+        if ch == ' ':
+            continue
         glyph = FONT_5X3.get(ch, FONT_5X3[' '])
         for text_row in range(5):
             grid_row = ROWS - 1 - text_row
             for dx, c in enumerate(glyph[text_row]):
-                if c == 'X' and 0 <= col + dx < COLS:
-                    set_pixel(grid, grid_row, col + dx, *fg)
-        col += 4
+                if c == 'X' and 0 <= start_col + col + dx < COLS:
+                    set_pixel(grid, grid_row, start_col + col + dx, *fg)
     return grid
 
 
 def text_bitmap(text):
-    """Build a full-width bitmap for scrolling text."""
-    text = text.upper()
-    char_width = 4
-    total_width = len(text) * char_width
+    """Build a full-width bitmap for scrolling text. Spaces are compressed."""
+    text, positions, total_width = text_layout(text)
+    total_width += 1  # include trailing pixel
     bitmap = [[False] * total_width for _ in range(5)]
-    for ci, ch in enumerate(text):
+    for ch, col in positions:
+        if ch == ' ':
+            continue
         glyph = FONT_5X3.get(ch, FONT_5X3[' '])
         for row in range(5):
             for dx, c in enumerate(glyph[row]):
-                if c == 'X':
-                    bitmap[row][ci * char_width + dx] = True
+                if c == 'X' and col + dx < total_width:
+                    bitmap[row][col + dx] = True
     return bitmap, total_width
 
 
