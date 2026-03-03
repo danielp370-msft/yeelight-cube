@@ -432,6 +432,7 @@ NAMED_PALETTES = {
     "pastel":  [(255, 180, 200), (180, 220, 255), (200, 255, 200), (255, 255, 180)],
     "xmas":    [(255, 0, 0), (0, 200, 0), (255, 215, 0)],
     "ice":     [(100, 180, 255), (200, 230, 255), (255, 255, 255)],
+    "matrix":  [(0, 255, 0), (0, 200, 50), (50, 255, 50), (0, 180, 80), (100, 255, 0)],
 }
 
 
@@ -481,7 +482,7 @@ def render_sign_multi(text, colors=None, bg=(0, 0, 0)):
     return grid
 
 
-def render_text_with_bg(text, fg=(255, 255, 255), bg=(30, 0, 0)):
+def render_text_with_bg(text, fg=(255, 255, 255), bg=(0, 0, 1)):
     """Render text with a solid background color (e.g., ON AIR style)."""
     text, positions, total_w = text_layout(text)
     grid = make_grid(*bg)
@@ -821,10 +822,10 @@ Examples (native):
             bg = (int(sys.argv[6]), int(sys.argv[7]), int(sys.argv[8]))
         elif len(sys.argv) >= 6:
             fg = (int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]))
-            bg = (255, 0, 0)
+            bg = (0, 0, 1)
         else:
             fg = (255, 255, 255)
-            bg = (255, 0, 0)
+            bg = (0, 0, 1)
         grid = render_text_with_bg(msg, fg=fg, bg=bg)
         send_grid(grid)
         print(f'Sign: "{msg}"')
