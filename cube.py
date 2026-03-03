@@ -149,6 +149,84 @@ def send_grid(grid, ip=CUBE_IP, port=CUBE_PORT):
         cube.send_frame(grid)
 
 
+def send_native(method, params=[], ip=CUBE_IP, port=CUBE_PORT):
+    """Send a raw command to the cube (non-FX mode)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(3)
+    s.connect((ip, port))
+    time.sleep(0.2)
+    msg = json.dumps({"id": 1, "method": method, "params": params}) + "\r\n"
+    s.send(msg.encode())
+    time.sleep(0.3)
+    try:
+        resp = s.recv(2048).decode().strip()
+    except:
+        resp = ""
+    s.close()
+    return resp
+
+
+# Color flow presets (count=0 means loop, action=1 means stay on last)
+CF_PRESETS = {
+    "candle": (0, 1, "200,1,16744448,80,300,1,16729600,60,150,1,16755200,90,"
+               "250,1,16740352,70,200,1,16748544,85,350,1,16724736,50"),
+    "police": (0, 1, "150,1,16711680,100,150,1,255,100"),
+    "breathe_r": (0, 1, "2000,1,16711680,100,2000,1,16711680,1"),
+    "breathe_g": (0, 1, "2000,1,65280,100,2000,1,65280,1"),
+    "breathe_b": (0, 1, "2000,1,255,100,2000,1,255,1"),
+    "breathe_c": (0, 1, "2000,1,65535,100,2000,1,65535,1"),
+    "alarm": (0, 1, "100,1,16711680,100,100,1,16711680,1"),
+    "rainbow": (0, 1, "1000,1,16711680,100,1000,1,65280,100,1000,1,255,100,"
+                "1000,1,16776960,100,1000,1,16711935,100,1000,1,65535,100"),
+    "disco": (0, 1, "200,1,16711680,100,200,1,65280,100,200,1,255,100,"
+              "200,1,16776960,100,200,1,16711935,100,200,1,65535,100"),
+    "sunset_flow": (0, 1, "3000,1,4915330,100,3000,1,14364480,100,"
+                    "3000,1,16727040,100,3000,1,16744960,100"),
+    "night": (0, 1, "5000,2,3000,5,5000,2,2700,3"),
+}
+
+
+def effect_start(name):
+    """Start a native color flow effect."""
+    if name not in CF_PRESETS:
+        print(f"Unknown effect: {name}")
+        print(f"Available: {', '.join(CF_PRESETS.keys())}")
+        return
+    count, action, flow = CF_PRESETS[name]
+    send_native("set_power", ["on", "smooth", 300])
+    time.sleep(0.3)
+    send_native("start_cf", [count, action, flow])
+
+
+def effect_stop():
+    """Stop any running color flow."""
+    send_native("stop_cf")
+
+
+def alert_then_text(text, flashes=3, alert_color=(255, 0, 0),
+                    fg=None, bg=(0, 0, 0), palette=None):
+    """Flash an alert color, then display text."""
+    # Flash phase using native color flow (smooth + fast)
+    r, g, b = alert_color
+    color_val = (r << 16) + (g << 8) + b
+    flow = f"100,1,{color_val},100,100,1,{color_val},1"
+    send_native("set_power", ["on", "smooth", 100])
+    time.sleep(0.2)
+    send_native("start_cf", [flashes, 1, flow])
+    time.sleep(flashes * 0.2 + 0.3)
+    # Text phase
+    if palette:
+        pal = NAMED_PALETTES.get(palette)
+        colors = pal if pal else rainbow_palette(len(text.replace(' ', '')))
+        grid = render_text_multi(text, colors=colors)
+    elif fg:
+        grid = render_text(text, fg=fg)
+    else:
+        grid = render_text(text, fg=(255, 255, 255))
+    if grid:
+        send_grid(grid)
+
+
 # ── pattern generators ───────────────────────────────────────────
 def rainbow_wave():
     """Smooth rainbow gradient across the grid."""
@@ -269,20 +347,40 @@ FONT_5X3 = {
 
 
 def text_layout(text):
-    """Compute column positions for each char. Variable-width glyphs."""
+    """Compute column positions for each char. Variable-width glyphs, auto-fit spaces."""
     text = text.upper()
-    positions = []
-    col = 0
+    # First pass: measure chars without spaces
+    char_widths = []
     for ch in text:
-        positions.append((ch, col))
         if ch == ' ':
-            col += 2  # word gap
+            char_widths.append(0)
         else:
             glyph = FONT_5X3.get(ch, FONT_5X3[' '])
-            col += len(glyph[0]) + 1  # glyph width + 1px gap
-    # subtract trailing gap
-    if text and text[-1] != ' ':
-        col -= 1
+            char_widths.append(len(glyph[0]))
+    # Total width of non-space chars + 1px gaps between adjacent non-space chars
+    non_space = [i for i, ch in enumerate(text) if ch != ' ']
+    letters_w = sum(char_widths)
+    gaps = sum(1 for i in range(len(text) - 1) if text[i] != ' ' and text[i+1] != ' ')
+    base_w = letters_w + gaps
+    # Distribute remaining space to word gaps
+    n_spaces = text.count(' ')
+    if n_spaces > 0:
+        avail = COLS - base_w
+        space_w = max(2, avail // n_spaces) if avail > 0 else 2
+    else:
+        space_w = 2
+    # Second pass: build positions
+    positions = []
+    col = 0
+    for i, ch in enumerate(text):
+        positions.append((ch, col))
+        if ch == ' ':
+            col += space_w
+        else:
+            col += char_widths[i]
+            # 1px gap only if next char is non-space
+            if i + 1 < len(text) and text[i + 1] != ' ':
+                col += 1
     return text, positions, col
 
 
@@ -361,7 +459,7 @@ def render_text_multi(text, colors=None, bg=(0, 0, 0)):
     return grid
 
 
-def render_sign_multi(text, colors=None, bg=(30, 0, 0)):
+def render_sign_multi(text, colors=None, bg=(0, 0, 0)):
     """Render sign-style text with each letter a different color and solid bg."""
     text, positions, total_w = text_layout(text)
     if colors is None:
@@ -676,6 +774,23 @@ Examples:
   python cube.py anim mscroll "MERRY CHRISTMAS" xmas 60 1
   python cube.py anim scroll "HELLO WORLD" 60 1
   python cube.py anim gif nyan.gif 60
+
+Commands (native effects — smooth hardware transitions):
+  effect <name>                 — Start a native color flow effect
+  effect stop                   — Stop current effect
+  alert <message> [palette]     — Flash alert then show text
+  bright <1-100> [smooth|sudden] — Set brightness
+  night                         — Warm nightlight mode
+
+Effects: candle, police, alarm, breathe_r, breathe_g, breathe_b,
+         breathe_c, rainbow, disco, sunset_flow, night
+
+Examples (native):
+  python cube.py effect candle
+  python cube.py effect police
+  python cube.py alert "DOOR" neon
+  python cube.py bright 30 smooth
+  python cube.py night
 """
 
     if len(sys.argv) < 2:
@@ -808,6 +923,36 @@ Examples:
                 anim_breathe(dur, fps, r, g, b)
             else:
                 print(f"Unknown animation: {anim_type}")
+
+    elif command == "effect":
+        name = sys.argv[2].lower() if len(sys.argv) > 2 else "candle"
+        if name == "stop":
+            effect_stop()
+            print("Effect stopped.")
+        else:
+            effect_start(name)
+            print(f"Effect: {name}")
+
+    elif command == "alert":
+        msg = sys.argv[2] if len(sys.argv) > 2 else "ALERT"
+        palette = sys.argv[3] if len(sys.argv) > 3 else None
+        alert_then_text(msg, palette=palette)
+        print(f'Alert: "{msg}"')
+
+    elif command == "bright":
+        level = int(sys.argv[2]) if len(sys.argv) > 2 else 100
+        mode = sys.argv[3] if len(sys.argv) > 3 else "smooth"
+        dur = 500 if mode == "smooth" else 0
+        send_native("set_bright", [level, mode, dur])
+        print(f"Brightness: {level}% ({mode})")
+
+    elif command == "night":
+        send_native("set_power", ["on", "smooth", 500])
+        time.sleep(0.3)
+        send_native("set_ct_abx", [2700, "smooth", 1000])
+        time.sleep(0.5)
+        send_native("set_bright", [3, "smooth", 1000])
+        print("Nightlight mode (warm 2700K, 3%)")
 
     else:
         print(usage)
