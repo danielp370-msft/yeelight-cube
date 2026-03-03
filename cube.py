@@ -293,7 +293,7 @@ def render_text(text, fg=(0, 255, 200), bg=(0, 0, 0)):
         return None
 
 
-def render_text_with_bg(text, fg=(255, 255, 255), bg=(60, 0, 0)):
+def render_text_with_bg(text, fg=(255, 255, 255), bg=(30, 0, 0)):
     """Render text with a solid background color (e.g., ON AIR style)."""
     text = text.upper()
     total_w = len(text) * 4 - 1
@@ -615,21 +615,8 @@ Examples:
 
     elif command == "anim":
         anim_type = sys.argv[2].lower() if len(sys.argv) > 2 else "rainbow"
-        dur = int(sys.argv[3]) if len(sys.argv) > 3 else 60
-        fps = float(sys.argv[4]) if len(sys.argv) > 4 else 1
 
-        if anim_type == "rainbow":
-            anim_rainbow(dur, fps)
-        elif anim_type == "aurora":
-            anim_aurora(dur, fps)
-        elif anim_type == "fire":
-            anim_fire(dur, fps)
-        elif anim_type == "breathe":
-            r = int(sys.argv[5]) if len(sys.argv) > 5 else 0
-            g = int(sys.argv[6]) if len(sys.argv) > 6 else 255
-            b = int(sys.argv[7]) if len(sys.argv) > 7 else 200
-            anim_breathe(dur, fps, r, g, b)
-        elif anim_type == "scroll":
+        if anim_type == "scroll":
             text = sys.argv[3] if len(sys.argv) > 3 else "HELLO"
             dur = int(sys.argv[4]) if len(sys.argv) > 4 else 60
             fps = float(sys.argv[5]) if len(sys.argv) > 5 else 1
@@ -639,7 +626,22 @@ Examples:
             dur = int(sys.argv[4]) if len(sys.argv) > 4 else 60
             anim_gif(path, dur)
         else:
-            print(f"Unknown animation: {anim_type}")
+            dur = int(sys.argv[3]) if len(sys.argv) > 3 else 60
+            fps = float(sys.argv[4]) if len(sys.argv) > 4 else 1
+
+            if anim_type == "rainbow":
+                anim_rainbow(dur, fps)
+            elif anim_type == "aurora":
+                anim_aurora(dur, fps)
+            elif anim_type == "fire":
+                anim_fire(dur, fps)
+            elif anim_type == "breathe":
+                r = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+                g = int(sys.argv[6]) if len(sys.argv) > 6 else 255
+                b = int(sys.argv[7]) if len(sys.argv) > 7 else 200
+                anim_breathe(dur, fps, r, g, b)
+            else:
+                print(f"Unknown animation: {anim_type}")
 
     else:
         print(usage)
