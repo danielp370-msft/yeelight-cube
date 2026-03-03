@@ -293,6 +293,80 @@ def render_text(text, fg=(0, 255, 200), bg=(0, 0, 0)):
         return None
 
 
+def rainbow_palette(n):
+    """Generate n evenly-spaced rainbow colors."""
+    colors = []
+    for i in range(n):
+        h = i / max(n, 1)
+        # HSV to RGB (s=1, v=1)
+        r, g, b = 0, 0, 0
+        sector = int(h * 6) % 6
+        f = h * 6 - int(h * 6)
+        if sector == 0:   r, g, b = 255, int(255*f), 0
+        elif sector == 1: r, g, b = int(255*(1-f)), 255, 0
+        elif sector == 2: r, g, b = 0, 255, int(255*f)
+        elif sector == 3: r, g, b = 0, int(255*(1-f)), 255
+        elif sector == 4: r, g, b = int(255*f), 0, 255
+        elif sector == 5: r, g, b = 255, 0, int(255*(1-f))
+        colors.append((r, g, b))
+    return colors
+
+
+NAMED_PALETTES = {
+    "rainbow": None,  # auto-generated
+    "fire":    [(255, 0, 0), (255, 100, 0), (255, 200, 0), (255, 255, 100)],
+    "ocean":   [(0, 20, 80), (0, 80, 200), (0, 180, 255), (100, 220, 255)],
+    "neon":    [(255, 0, 255), (0, 255, 255), (255, 255, 0), (0, 255, 100)],
+    "pastel":  [(255, 180, 200), (180, 220, 255), (200, 255, 200), (255, 255, 180)],
+    "xmas":    [(255, 0, 0), (0, 200, 0), (255, 215, 0)],
+    "ice":     [(100, 180, 255), (200, 230, 255), (255, 255, 255)],
+}
+
+
+def render_text_multi(text, colors=None, bg=(0, 0, 0)):
+    """Render text with each letter a different color."""
+    text = text.upper()
+    if colors is None:
+        colors = rainbow_palette(len(text))
+    total_w = len(text) * 4 - 1
+    grid = make_grid(*bg)
+    if total_w > COLS:
+        return None  # too wide, caller should scroll
+    start_col = (COLS - total_w) // 2
+    col = start_col
+    for ci, ch in enumerate(text):
+        fg = colors[ci % len(colors)]
+        glyph = FONT_5X3.get(ch, FONT_5X3[' '])
+        for text_row in range(5):
+            grid_row = ROWS - 1 - text_row
+            for dx, c in enumerate(glyph[text_row]):
+                if c == 'X' and 0 <= col + dx < COLS:
+                    set_pixel(grid, grid_row, col + dx, *fg)
+        col += 4
+    return grid
+
+
+def render_sign_multi(text, colors=None, bg=(30, 0, 0)):
+    """Render sign-style text with each letter a different color and solid bg."""
+    text = text.upper()
+    if colors is None:
+        colors = rainbow_palette(len(text))
+    total_w = len(text) * 4 - 1
+    grid = make_grid(*bg)
+    start_col = max(0, (COLS - total_w) // 2)
+    col = start_col
+    for ci, ch in enumerate(text):
+        fg = colors[ci % len(colors)]
+        glyph = FONT_5X3.get(ch, FONT_5X3[' '])
+        for text_row in range(5):
+            grid_row = ROWS - 1 - text_row
+            for dx, c in enumerate(glyph[text_row]):
+                if c == 'X' and 0 <= col + dx < COLS:
+                    set_pixel(grid, grid_row, col + dx, *fg)
+        col += 4
+    return grid
+
+
 def render_text_with_bg(text, fg=(255, 255, 255), bg=(30, 0, 0)):
     """Render text with a solid background color (e.g., ON AIR style)."""
     text = text.upper()
@@ -487,6 +561,41 @@ def anim_scroll_text(text, duration=60, fps=1, fg=(0, 255, 200), bg=(0, 0, 0)):
         print(f"{frame} frames in {time.time()-start:.0f}s")
 
 
+def anim_scroll_text_multi(text, duration=60, fps=1, colors=None, bg=(0, 0, 0)):
+    """Scroll multicolor text — each letter gets its own color."""
+    text = text.upper()
+    if colors is None:
+        colors = rainbow_palette(len(text))
+    # Build per-column color map
+    char_width = 4
+    total_width = len(text) * char_width
+    col_colors = []
+    for ci in range(len(text)):
+        c = colors[ci % len(colors)]
+        for _ in range(char_width):
+            col_colors.append(c)
+
+    bitmap, _ = text_bitmap(text)
+
+    with CubeConnection() as cube:
+        start = time.time()
+        frame = 0
+        while time.time() - start < duration:
+            offset = frame % (total_width + COLS)
+            grid = make_grid(*bg)
+            for row in range(ROWS):
+                grid_row = ROWS - 1 - row
+                for col in range(COLS):
+                    src_col = col + offset - COLS
+                    if 0 <= src_col < total_width and bitmap[row][src_col]:
+                        fg = col_colors[src_col]
+                        set_pixel(grid, grid_row, col, *fg)
+            cube.send_frame(grid)
+            frame += 1
+            time.sleep(1.0 / fps)
+        print(f"{frame} frames in {time.time()-start:.0f}s")
+
+
 def anim_gif(path, duration=60, loops=0):
     """Play an animated GIF on the cube."""
     frames, durations = load_gif_frames(path)
@@ -520,6 +629,8 @@ if __name__ == "__main__":
 Commands (static):
   text <message> [r g b]        — Display text (auto-scrolls if too long)
   sign <message> [fgR fgG fgB bgR bgG bgB] — Text with background (ON AIR style)
+  multi <message> [palette]     — Multicolor text (each letter different color)
+  msign <message> [palette] [bgR bgG bgB] — Multicolor sign with background
   image <path>                  — Display a PNG/JPG image
   rainbow                       — Rainbow wave gradient
   sunset                        — Warm sunset gradient
@@ -534,14 +645,19 @@ Commands (animated):
   anim fire [duration] [fps]                 — Flickering fire
   anim breathe [duration] [fps] [r g b]      — Breathing pulse
   anim scroll <text> [duration] [fps]        — Scrolling text
+  anim mscroll <text> [palette] [dur] [fps]  — Multicolor scrolling text
   anim gif <path> [duration]                 — Play animated GIF
+
+Palettes: rainbow, fire, ocean, neon, pastel, xmas, ice
 
 Examples:
   python cube.py text "HI" 0 255 200
-  python cube.py text "ON AIR"                  # auto-scrolls
-  python cube.py sign "LIVE" 255 255 255 255 0 0  # white on red
-  python cube.py image photo.png
-  python cube.py anim fire 120 1
+  python cube.py multi "HELLO"                  # rainbow letters
+  python cube.py multi "COOL" neon              # neon palette
+  python cube.py msign "LIVE" fire              # fire-colored on dark bg
+  python cube.py msign "XMAS" xmas 10 20 5     # xmas colors on dark green
+  python cube.py sign "LIVE" 255 255 255 255 0 0
+  python cube.py anim mscroll "MERRY CHRISTMAS" xmas 60 1
   python cube.py anim scroll "HELLO WORLD" 60 1
   python cube.py anim gif nyan.gif 60
 """
@@ -582,6 +698,32 @@ Examples:
         send_grid(grid)
         print(f'Sign: "{msg}"')
 
+    elif command == "multi":
+        msg = sys.argv[2] if len(sys.argv) > 2 else "HELLO"
+        palette_name = sys.argv[3] if len(sys.argv) > 3 else "rainbow"
+        pal = NAMED_PALETTES.get(palette_name)
+        colors = pal if pal else rainbow_palette(len(msg))
+        grid = render_text_multi(msg, colors=colors)
+        if grid is None:
+            print(f'"{msg}" too wide, scrolling multicolor...')
+            anim_scroll_text_multi(msg, duration=len(msg) * 4, fps=1, colors=colors)
+        else:
+            send_grid(grid)
+            print(f'Multicolor: "{msg}" ({palette_name})')
+
+    elif command == "msign":
+        msg = sys.argv[2] if len(sys.argv) > 2 else "LIVE"
+        palette_name = sys.argv[3] if len(sys.argv) > 3 else "rainbow"
+        if len(sys.argv) >= 7:
+            bg = (int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]))
+        else:
+            bg = (30, 0, 0)
+        pal = NAMED_PALETTES.get(palette_name)
+        colors = pal if pal else rainbow_palette(len(msg))
+        grid = render_sign_multi(msg, colors=colors, bg=bg)
+        send_grid(grid)
+        print(f'Multicolor sign: "{msg}" ({palette_name})')
+
     elif command == "image":
         path = sys.argv[2]
         grid = load_image(path)
@@ -621,6 +763,14 @@ Examples:
             dur = int(sys.argv[4]) if len(sys.argv) > 4 else 60
             fps = float(sys.argv[5]) if len(sys.argv) > 5 else 1
             anim_scroll_text(text, dur, fps)
+        elif anim_type == "mscroll":
+            text = sys.argv[3] if len(sys.argv) > 3 else "HELLO"
+            palette_name = sys.argv[4] if len(sys.argv) > 4 else "rainbow"
+            dur = int(sys.argv[5]) if len(sys.argv) > 5 else 60
+            fps = float(sys.argv[6]) if len(sys.argv) > 6 else 1
+            pal = NAMED_PALETTES.get(palette_name)
+            colors = pal if pal else rainbow_palette(len(text))
+            anim_scroll_text_multi(text, dur, fps, colors=colors)
         elif anim_type == "gif":
             path = sys.argv[3] if len(sys.argv) > 3 else "anim.gif"
             dur = int(sys.argv[4]) if len(sys.argv) > 4 else 60
